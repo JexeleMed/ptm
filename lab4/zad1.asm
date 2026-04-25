@@ -2,8 +2,7 @@ $NOMOD51
 $INCLUDE (reg517.inc)
 
 ; --- DEFINICJE PORTÓW I ZMIENNYCH ---
-P5 equ 0F8H
-P7 equ 0DBH
+; P5 i P7 są już zdefiniowane w reg517.inc, więc je usuwamy
     
 LCDstatus  equ 0FF2EH       ; adres do odczytu gotowosci LCD (XDATA)
 LCDcontrol equ 0FF2CH       ; adres do podania bajtu sterujacego LCD (XDATA)
@@ -104,7 +103,7 @@ scan_matrix:
     ANL A, #0FH
     CJNE A, #0FH, key_L1
 
-    SJMP scan_matrix        ; Brak wcisnietego klawisza, powtarzaj skanowanie
+    LJMP scan_matrix        ; Brak wcisnietego klawisza, powtarzaj skanowanie
 
 ; Rekonstrukcja kodu skaningowego (połączenie P5 i P7)
 key_L4: ORL A, #0EFH
@@ -131,32 +130,36 @@ wait_for_release:
 check_modifiers:
     CJNE A, #0E7H, check_hash   ; Czy wcisnieto '*'?
     MOV R3, #1                  ; Tryb 1: małe litery
-    SJMP scan_matrix
+    LJMP scan_matrix
     
 check_hash:
     CJNE A, #0EDH, check_D      ; Czy wcisnieto '#'?
     MOV R3, #2                  ; Tryb 2: duże litery
-    SJMP scan_matrix
+    LJMP scan_matrix
     
 check_D:
     CJNE A, #0EEH, find_char    ; Czy wcisnieto 'D'?
     MOV R3, #0                  ; Tryb 0: cyfry i bazowe znaki
-    SJMP scan_matrix
+    LJMP scan_matrix
 
 find_char:
     MOV R2, #0                  ; R2 = Indeks (0-12) wyszukiwanego klawisza
     MOV DPTR, #SCAN_CODES       ; Tabela z kodami skaningowymi
 
 find_loop:
+    CLR A                       ; Wyczyść akumulator
     MOV A, R2
     MOVC A, @A+DPTR
-    JZ scan_matrix              ; 00H -> koniec tabeli, ignoruj niezidentyfikowane kody
-    CJNE A, R4, next_code       ; Jesli brak zgodnosci -> szukaj dalej
-    SJMP print_char             ; Znaleziono zgodny kod skaningowy!
+    JZ no_match                 ; 00H -> koniec tabeli
+    CJNE A, 04H, next_code      ; Porównaj z R4 (R4 = adres 04H)
+    SJMP print_char             ; Znaleziono zgodny kod!
 
 next_code:
     INC R2
     SJMP find_loop
+
+no_match:
+    LJMP scan_matrix            ; Nie znaleziono - wróć do skanowania
 
 print_char:
     MOV A, R3                   ; Sprawdz ktory zestaw aktywowac (na bazie R3)
@@ -174,10 +177,11 @@ do_set0:
     MOV DPTR, #SET0_CHARS
 
 fetch_and_print:
+    CLR A                       ; Wyczyść akumulator
     MOV A, R2
     MOVC A, @A+DPTR             ; Pobierz gotowy kod ASCII z wybranej tabeli
     ACALL putcharLCD            ; Wyswietl go na ekranie LCD
-    SJMP scan_matrix            ; Wroc do poczatku (nieskonczona petla programu)
+    LJMP scan_matrix            ; Wroc do poczatku (nieskonczona petla programu)
 
 ; --- TABELE DANYCH (W PAMIĘCI ROM / CODE) ---
 
