@@ -28,12 +28,12 @@ ORG 000BH
     PUSH PSW
     PUSH DPH
     PUSH DPL
-    
+
     MOV TH0, #3CH
     MOV TL0, #0B0H
     DEC R0
     LCALL scan_buttons
-    
+
     POP DPL
     POP DPH
     POP PSW
@@ -81,7 +81,7 @@ init_LCD MACRO
          ENDM
 
 ; ---------- Procedury opóźnienia ----------
-delay:  
+delay:
     MOV R0, #5
 one:MOV R1, #5
 dwa:MOV R2, #5
@@ -216,19 +216,19 @@ h_d0_ok:
     MOV B, A               ; B = druga cyfra
     ADD A, #30H            ; Pokaż na LCD
     LCALL putcharLCD
-    
+
     ; 3. Synteza: (TEMP_D1 * 10) + B
     MOV A, TEMP_D1
     MOV R4, B              ; Zabezpiecz B
     MOV B, #10
     MUL AB
     ADD A, R4
-    
+
     ; 4. Weryfikacja zakresu (< 24)
     CLR C
     SUBB A, #24
     JNC hour_error         ; Jeśli wynik >= 0, błąd (godzina >= 24)
-    
+
     ; Godzina poprawna
     MOV A, TEMP_D1
     MOV B, #10
@@ -300,10 +300,10 @@ wait_confirm:
     LCDcntrlWR #CLEAR
     MOV DPTR, #TXT_CONF
     LCALL print_str
-    LCDcntrlWR #CLEAR
 wc_loop:
     LCALL get_key
     CJNE A, #0FFH, wc_loop ; Czekamy wyłącznie na '#' (0FFH)
+    LCDcntrlWR #CLEAR
     RET                    ; Koniec kreatora!
 
 ; ---------- Wypisywanie łańcucha z ROM ----------
@@ -347,7 +347,7 @@ scan_buttons:
     xrl  a, PREV_P3
     anl  a, b
     mov  PREV_P3, b
-    
+
     jb   acc.2, do_start_stop
     jb   acc.3, do_hour_plus
     jb   acc.4, do_hour_minus
@@ -355,7 +355,7 @@ scan_buttons:
     ljmp sb_end
 
 do_start_stop:
-    cpl  F_RUNNING        
+    cpl  F_RUNNING
     ljmp sb_end
 
 do_hour_plus:
@@ -389,17 +389,17 @@ sb_end:
 start:
     init_LCD
     MOV R7, #0             ; Sekundy zawsze startują od 0
-    
+
     ; Uruchamiamy interaktywny kreator ustawiania czasu
-    LCALL setup_time       
-    
+    LCALL setup_time
+
     ; Po zatwierdzeniu klawiszem '#', startujemy właściwy zegar
     mov  TMOD, #01H
     mov  TH0, #3CH
     mov  TL0, #0B0H
     setb TCON.4
     mov  0A8H, #82H          ; Włącz przerwanie Timera 0
-    
+
     setb F_RUNNING         ; Zegar zaczyna chodzić
     mov  PREV_P3, #0
     lcall display_clock
@@ -411,11 +411,11 @@ main_loop:
     mov  A, R0
     jnz  main_loop
     mov  R0, #20
-    
+
     jnb  F_RUNNING, skip_tick
     lcall inc_clock
     lcall display_clock
-    
+
 skip_tick:
     mov  A, P1
     cpl  A

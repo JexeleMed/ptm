@@ -32,10 +32,10 @@ LCDstatus  EQU 0FF2EH
 LCDcontrol EQU 0FF2CH
 LCDdataWR  EQU 0FF2DH
 
-#define  HOME     0x80
-#define  INITDISP 0x38
-#define  LCDON    0x0E
-#define  CLEAR    0x01
+HOME       EQU 080H
+INITDISP   EQU 038H
+LCDON      EQU 00EH
+CLEAR      EQU 001H
 
 ; ----- Zmienne w IRAM -----
 CLOCK_RUNNING EQU 20H      ; 1 = chodzi, 0 = zatrzymany
@@ -393,6 +393,7 @@ tch_hash:
     mov  R5, SETUP_HOUR
     mov  R6, SETUP_MIN
     mov  R7, #0
+    lcall clear_display
     ; ---- czesc 2: ustawianie alarmu (zatwierdzenie *) ----
     mov  SETUP_STEP, #4        ; kroki 4-7
     mov  SETUP_HOUR, #0
