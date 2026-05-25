@@ -1,91 +1,80 @@
-; =======================================================
-; zad_3.a51 - Zegar z budzikiem
-;             Ustawianie czasu (HH:MM) - zatwierdzenie #
-;             Ustawianie alarmu (HH:MM) - zatwierdzenie *
-;             Po osiagnieciu alarmu buzzer P6.4 na 10s
-;             Start/Stop: P3.2, Godzina+: P3.3, Godzina-: P3.4
-; =======================================================
-
 $NOMOD51
+$INCLUDE (reg517.inc)
 
-; ----- Definicje rejestr體 SFR dla 80C537 -----
-P0      DATA 080H
-P1      DATA 090H
-P2      DATA 0A0H
-P3      DATA 0B0H
-P4      DATA 0C0H
-P5      DATA 0F8H
-P6      DATA 0F9H
-P7      DATA 0DBH
+; =======================================================
+; ZEGAR Z KREATOREM (CZAS + ALARM) I BUZEREM
+; =======================================================
 
-TMOD    DATA 089H
-TL0     DATA 08AH
-TH0     DATA 08CH
-TCON    DATA 088H
-IE      DATA 0A8H
+ljmp start
 
-TR0     BIT 08CH
-TF0     BIT 08DH
+; ----- Definicje port贸w (zgodne z ZD537) -----
+LCDstatus  equ 0FF2EH
+LCDcontrol equ 0FF2CH
+LCDdataWR  equ 0FF2DH
 
-; ----- Rejestry LCD -----
-LCDstatus  EQU 0FF2EH
-LCDcontrol EQU 0FF2CH
-LCDdataWR  EQU 0FF2DH
-
-HOME       EQU 080H
-INITDISP   EQU 038H
-LCDON      EQU 00EH
-CLEAR      EQU 001H
+HOME     equ 0x80
+INITDISP equ 0x38
+HOM2     equ 0xc0
+LCDON    equ 0x0e
+CLEAR    equ 0x01
 
 ; ----- Zmienne w IRAM -----
-CLOCK_RUNNING EQU 20H      ; 1 = chodzi, 0 = zatrzymany
-PREV_P3       EQU 21H      ; poprzedni stan P3.2-P3.5
-SETUP_STEP    EQU 22H      ; 0-3 czas, 4-7 alarm
-SETUP_HOUR    EQU 23H      ; tymczasowa godzina (czas lub alarm)
-SETUP_MIN     EQU 24H      ; tymczasowa minuta
-ALARM_HOUR    EQU 25H      ; przechowuje alarm godzine
-ALARM_MIN     EQU 26H      ; przechowuje alarm minute
-TEMP_KEY      EQU 27H      ; ostatni klawisz klawiatury
-DIGIT_TEMP    EQU 28H      ; pomocniczy
-ALARM_TRIG    EQU 29H      ; 1 = alarm aktywny (buzzer dzwoni)
-ALARM_CNT     EQU 2AH      ; licznik do wylaczenia (10s = 200 * 50ms)
+F_RUNNING  EQU 00H         ; FLAGA BITOWA: bit 0 w bajcie 20H (1=chodzi, 0=stop)
+PREV_P3    EQU 21H         ; poprzedni stan P3.2-P3.5
+TEMP_D1    EQU 22H         ; pierwsza wpisana cyfra
+ALARM_HOUR EQU 23H         ; zapisana godzina alarmu
+ALARM_MIN  EQU 24H         ; zapisana minuta alarmu
+ALARM_TRIG EQU 25H         ; flaga: 1 = buzer dzwoni
+ALARM_CNT  EQU 26H         ; licznik czasu dzwonienia (200 * 50ms = 10s)
+ALARM_DONE EQU 27H         ; flaga blokuj膮ca ponowne wyzwolenie w tej samej minucie
 
-; ----- Wektor resetu -----
-ORG 0
-    ljmp start
-
-; ----- Wektor przerwania timer0 (co 50ms) -----
+; ----- Przerwanie timer0 (co 50ms) -----
 ORG 000BH
+    PUSH PSW
+    PUSH DPH
+    PUSH DPL
+    PUSH ACC
+    PUSH B
+
     MOV TH0, #3CH
     MOV TL0, #0B0H
     DEC R0
-    LCALL scan_buttons      ; skanuje P3
-    LCALL scan_keyboard     ; skanuje klawiature (do wylaczania alarmu)
-    LCALL alarm_handler     ; sprawdza czas i obsluguje buzzer
+    
+    LCALL scan_buttons          ; Przyciski steruj膮ce czasem
+    LCALL check_alarm_silence   ; Wy艂膮czanie alarmu z klawiatury matrycowej
+    LCALL alarm_handler         ; Logika dzwonienia i odliczania 10s
+
+    POP B
+    POP ACC
+    POP DPL
+    POP DPH
+    POP PSW
     RETI
 
-; ----- Kod gl體ny od adresu 0100H -----
+; ----- Kod gl贸wny -----
 ORG 0100H
 
-; ---------- Poprawione makra LCD (z zachowaniem DPTR) ----------
+; Makra LCD
 LCDcntrlWR MACRO x
            LOCAL loop
-           PUSH DPL
            PUSH DPH
+           PUSH DPL
+           PUSH ACC
 loop:      MOV  DPTR,#LCDstatus
            MOVX A,@DPTR
            JB   ACC.7,loop
            MOV  DPTR,#LCDcontrol
            MOV  A, x
            MOVX @DPTR,A
-           POP  DPH
+           POP  ACC
            POP  DPL
+           POP  DPH
            ENDM
 
 LCDcharWR MACRO
            LOCAL tutu
-           PUSH DPL
            PUSH DPH
+           PUSH DPL
            PUSH ACC
 tutu:      MOV  DPTR,#LCDstatus
            MOVX A,@DPTR
@@ -93,8 +82,8 @@ tutu:      MOV  DPTR,#LCDstatus
            MOV  DPTR,#LCDdataWR
            POP  ACC
            MOVX @DPTR,A
-           POP  DPH
            POP  DPL
+           POP  DPH
            ENDM
 
 init_LCD MACRO
@@ -102,6 +91,16 @@ init_LCD MACRO
          LCDcntrlWR #CLEAR
          LCDcntrlWR #LCDON
          ENDM
+
+; ---------- Procedury op贸藕nienia ----------
+delay:
+    MOV R0, #5
+one:MOV R1, #5
+dwa:MOV R2, #5
+trzy:DJNZ R2, trzy
+    DJNZ R1, dwa
+    DJNZ R0, one
+    RET
 
 ; ---------- Funkcje wyswietlania ----------
 putdigitLCD:
@@ -118,10 +117,6 @@ putcharLCD:
     LCDcharWR
     ret
 
-clear_display:
-    LCDcntrlWR #CLEAR
-    ret
-
 display_clock:
     LCDcntrlWR #HOME
     mov  a, R5
@@ -134,9 +129,306 @@ display_clock:
     lcall putcharLCD
     mov  a, R7
     lcall putdigitLCD
+    
+    ; --- NOWO艢膯: WYPISANIE ALARMU W 2 LINII ---
+    LCDcntrlWR #HOM2
+    mov  a, ALARM_HOUR
+    lcall putdigitLCD
+    mov  a, #':'
+    lcall putcharLCD
+    mov  a, ALARM_MIN
+    lcall putdigitLCD
+    ; ------------------------------------------
+    
     ret
 
-; ---------- Inkremntacja czasu ----------
+; =======================================================
+; OBS艁UGA KLAWIATURY MATRYCOWEJ (DO KREATORA)
+; =======================================================
+get_key:
+    ; Odczytuje klawisz i zwraca: 0-9 dla cyfr, 0FFH dla '#', 0FEH dla '*'
+scan_m:
+    MOV P5, #0EFH
+    MOV A, P7
+    ANL A, #0FH
+    CJNE A, #0FH, k_pressed
+    MOV P5, #0DFH
+    MOV A, P7
+    ANL A, #0FH
+    CJNE A, #0FH, k_pressed
+    MOV P5, #0BFH
+    MOV A, P7
+    ANL A, #0FH
+    CJNE A, #0FH, k_pressed
+    MOV P5, #07FH
+    MOV A, P7
+    ANL A, #0FH
+    CJNE A, #0FH, k_pressed
+    SJMP scan_m
+
+k_pressed:
+    MOV B, A
+    MOV A, P5
+    ANL A, #0F0H
+    ORL A, B
+    MOV R4, A
+wait_rel:
+    MOV P5, #00H
+    MOV A, P7
+    ANL A, #0FH
+    CJNE A, #0FH, wait_rel
+    ACALL delay
+
+    MOV R2, #0
+    MOV DPTR, #SCAN_CODES
+f_loop:
+    MOV A, R2
+    MOVC A, @A+DPTR
+    JZ  scan_m             
+    XRL A, R4
+    JZ  k_found
+    INC R2
+    SJMP f_loop
+
+k_found:
+    MOV DPTR, #NUM_VALUES
+    MOV A, R2
+    MOVC A, @A+DPTR
+    ; Je艣li to A, B, C lub D (zwraca 0EEH) - ignorujemy
+    CJNE A, #0EEH, digit_ok
+    SJMP scan_m
+digit_ok:
+    RET
+
+; =======================================================
+; KREATOR POCZ膭TKOWEGO USTAWIANIA (CZAS + ALARM)
+; =======================================================
+setup_full:
+    ; --- ETAP 1: USTAWIENIE CZASU ---
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_HOUR
+    LCALL print_str
+input_hour:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast1
+    SJMP input_hour
+chk_ast1:
+    CJNE A, #0FEH, h_d1_ok
+    SJMP input_hour
+h_d1_ok:
+    MOV TEMP_D1, A
+    ADD A, #30H
+    LCALL putcharLCD
+get_h0:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast2
+    SJMP get_h0
+chk_ast2:
+    CJNE A, #0FEH, h_d0_ok
+    SJMP get_h0
+h_d0_ok:
+    MOV B, A
+    ADD A, #30H
+    LCALL putcharLCD
+    ; Synteza (TEMP_D1 * 10) + B
+    MOV A, TEMP_D1
+    MOV R4, B
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    ; Weryfikacja
+    CLR C
+    SUBB A, #24
+    JNC hour_error
+    ; Zapis
+    MOV A, TEMP_D1
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    MOV R5, A
+    SJMP ask_mins
+hour_error:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ERR
+    LCALL print_str
+    ACALL delay
+    LJMP setup_full
+
+ask_mins:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_MIN
+    LCALL print_str
+input_min:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast3
+    SJMP input_min
+chk_ast3:
+    CJNE A, #0FEH, m_d1_ok
+    SJMP input_min
+m_d1_ok:
+    MOV TEMP_D1, A
+    ADD A, #30H
+    LCALL putcharLCD
+get_m0:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast4
+    SJMP get_m0
+chk_ast4:
+    CJNE A, #0FEH, m_d0_ok
+    SJMP get_m0
+m_d0_ok:
+    MOV B, A
+    ADD A, #30H
+    LCALL putcharLCD
+    
+    MOV A, TEMP_D1
+    MOV R4, B
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    CLR C
+    SUBB A, #60
+    JNC min_error
+    MOV A, TEMP_D1
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    MOV R6, A
+    SJMP wait_confirm
+min_error:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ERR
+    LCALL print_str
+    ACALL delay
+    LJMP ask_mins
+
+wait_confirm:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_CONF
+    LCALL print_str
+wc_loop:
+    LCALL get_key
+    CJNE A, #0FFH, wc_loop ; Czekamy na '#'
+    
+    ; --- ETAP 2: USTAWIENIE ALARMU ---
+setup_alarm:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ALARM_H
+    LCALL print_str
+input_ahour:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast5
+    SJMP input_ahour
+chk_ast5:
+    CJNE A, #0FEH, ah_d1_ok
+    SJMP input_ahour
+ah_d1_ok:
+    MOV TEMP_D1, A
+    ADD A, #30H
+    LCALL putcharLCD
+get_ah0:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast6
+    SJMP get_ah0
+chk_ast6:
+    CJNE A, #0FEH, ah_d0_ok
+    SJMP get_ah0
+ah_d0_ok:
+    MOV B, A
+    ADD A, #30H
+    LCALL putcharLCD
+    ; Synteza i weryfikacja
+    MOV A, TEMP_D1
+    MOV R4, B
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    CLR C
+    SUBB A, #24
+    JNC ahour_error
+    MOV A, TEMP_D1
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    MOV ALARM_HOUR, A
+    SJMP ask_amins
+ahour_error:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ERR
+    LCALL print_str
+    ACALL delay
+    LJMP setup_alarm
+
+ask_amins:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ALARM_M
+    LCALL print_str
+input_amin:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast7
+    SJMP input_amin
+chk_ast7:
+    CJNE A, #0FEH, am_d1_ok
+    SJMP input_amin
+am_d1_ok:
+    MOV TEMP_D1, A
+    ADD A, #30H
+    LCALL putcharLCD
+get_am0:
+    LCALL get_key
+    CJNE A, #0FFH, chk_ast8
+    SJMP get_am0
+chk_ast8:
+    CJNE A, #0FEH, am_d0_ok
+    SJMP get_am0
+am_d0_ok:
+    MOV B, A
+    ADD A, #30H
+    LCALL putcharLCD
+    
+    MOV A, TEMP_D1
+    MOV R4, B
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    CLR C
+    SUBB A, #60
+    JNC amin_error
+    MOV A, TEMP_D1
+    MOV B, #10
+    MUL AB
+    ADD A, R4
+    MOV ALARM_MIN, A
+    SJMP wait_aconfirm
+amin_error:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ERR
+    LCALL print_str
+    ACALL delay
+    LJMP ask_amins
+
+wait_aconfirm:
+    LCDcntrlWR #CLEAR
+    MOV DPTR, #TXT_ACONF
+    LCALL print_str
+wac_loop:
+    LCALL get_key
+    CJNE A, #0FEH, wac_loop ; Czekamy na '*'
+    LCDcntrlWR #CLEAR
+    RET
+
+; ---------- Wypisywanie 艂a艅cucha z ROM ----------
+print_str:
+    CLR A
+    MOVC A, @A+DPTR
+    JZ  p_str_end
+    LCALL putcharLCD
+    INC DPTR
+    SJMP print_str
+p_str_end:
+    RET
+
+; ---------- Inkrementacja czasu ----------
 inc_clock:
     inc  R7
     mov  a, R7
@@ -155,7 +447,9 @@ inc_min_ok:
 inc_sec_ok:
     ret
 
-; ---------- Obsluga buzera (P6.4) ----------
+; =======================================================
+; SYSTEM ALARMU I BUZERA
+; =======================================================
 buzzer_on:
     ORL  P6, #00010000B
     RET
@@ -163,43 +457,63 @@ buzzer_off:
     ANL  P6, #11101111B
     RET
 
-; ---------- Obsluga alarmu (wolane co 50ms) ----------
 alarm_handler:
-    push acc
-    ; jesli alarm juz aktywny, zmniejsz licznik
-    mov  a, ALARM_TRIG
-    jz   check_match
-    djnz ALARM_CNT, alarm_end   ; jeszcze nie czas wylaczyc
-    clr  ALARM_TRIG
-    lcall buzzer_off
-    sjmp alarm_end
+    MOV A, ALARM_TRIG
+    JZ check_match
+    MOV A, R7
+    RRC A
+    JC sound_on
+    LCALL buzzer_off
+    SJMP check_counter
+    ; Je艣li alarm jest aktywny, odliczamy czas
+    DJNZ ALARM_CNT, ah_end
+    ; 10 sekund min臋艂o - wy艂膮cz
+    CLR ALARM_TRIG
+    LCALL buzzer_off
+    SJMP ah_end
+sound_on:
+    LCALL buzzer_on
+check_counter:
+    DJNZ ALARM_CNT, ah_end
+    MOV ALARM_TRIG, #0
+    LCALL buzzer_off
+    SJMP ah_end
 check_match:
-    ; sprawdz czy czas r體na sie alarmowi
-    mov  a, R5
-    cjne a, ALARM_HOUR, alarm_end
-    mov  a, R6
-    cjne a, ALARM_MIN, alarm_end
-    ; alarm!
-    mov  ALARM_TRIG, #1
-    mov  ALARM_CNT, #200      ; 10 sekund (200 * 50ms)
-    lcall buzzer_on
-alarm_end:
-    ; wylacz alarm, jesli jakikolwiek klawisz wcisniety
-    mov  a, TEMP_KEY
-    cjne a, #0FFh, turn_off
-    mov  a, PREV_P3
-    jz   no_turn_off
-turn_off:
-    clr  ALARM_TRIG
-    lcall buzzer_off
-no_turn_off:
-    pop acc
-    ret
+    MOV A, R7
+    JZ time_is_zero
+    ; Gdy sekundy > 0, resetujemy blokad臋
+    MOV ALARM_DONE, #0
+    SJMP ah_end
+time_is_zero:
+    ; Sprawdzamy czy ju偶 dzwoni艂 w tej minucie
+    MOV A, ALARM_DONE
+    JNZ ah_end 
+    ; Por贸wnujemy czas
+    MOV A, R6
+    CJNE A, ALARM_MIN, ah_end
+    MOV A, R5
+    CJNE A, ALARM_HOUR, ah_end
+    ; Wyzw贸l alarm!
+    MOV ALARM_TRIG, #1
+    MOV ALARM_DONE, #1       ; Zablokuj na reszt臋 minuty
+    MOV ALARM_CNT, #200      ; 200 * 50ms = 10 sekund
+    LCALL buzzer_on
+ah_end:
+    RET
 
-; ---------- Obsluga przycisk體 P3 (aktywne niskie) ----------
+check_alarm_silence:
+    MOV A, ALARM_TRIG
+    JZ cas_end
+    MOV A, P3
+    JB ACC.4, cas_end
+silence_it:
+    MOV ALARM_TRIG, #0
+    LCALL buzzer_off
+cas_end:
+    RET
+
+; ---------- Obsluga przycisk贸w P3 ----------
 scan_buttons:
-    push acc
-    push b
     mov  a, P3
     anl  a, #3Ch
     cpl  a
@@ -207,12 +521,14 @@ scan_buttons:
     xrl  a, PREV_P3
     anl  a, b
     mov  PREV_P3, b
+
     jb   acc.2, do_start_stop
-    jb   acc.3, do_hour_plus
-    jb   acc.4, do_hour_minus
+    jb   acc.3, do_hour_plus	     
+    jb   acc.5, do_hour_minus
     ljmp sb_end
+
 do_start_stop:
-    cpl  CLOCK_RUNNING
+    cpl  F_RUNNING
     ljmp sb_end
 do_hour_plus:
     mov  a, R5
@@ -225,396 +541,40 @@ hp_ok:
     ljmp sb_end
 do_hour_minus:
     mov  a, R5
+    jz   hm_zero
     dec  a
-    cjne a, #0FFh, hm_ok
+    sjmp hm_ok
+hm_zero:
     mov  a, #23
 hm_ok:
     mov  R5, a
     lcall display_clock
+    ljmp sb_end
 sb_end:
-    pop b
-    pop acc
     ret
 
-; ---------- Skanowanie klawiatury 4x4 ----------
-scan_keyboard:
-    push b
-    push dpl
-    push dph
-    mov  TEMP_KEY, #0FFh
-    mov  r0, #4
-    mov  r1, #0
-    mov  dptr, #keymap
-next_row:
-    mov  a, r1
-    cjne a, #0, row1
-    mov  b, #11111110b
-    sjmp row_common
-row1:
-    cjne a, #1, row2
-    mov  b, #11111101b
-    sjmp row_common
-row2:
-    cjne a, #2, row3
-    mov  b, #11111011b
-    sjmp row_common
-row3:
-    mov  b, #11110111b
-row_common:
-    mov  a, P5
-    anl  a, #0F0h
-    orl  a, b
-    mov  P5, a
-    nop
-    nop
-    mov  a, P7
-    anl  a, #0Fh
-    cpl  a
-    jz   next_row_end
-    mov  r2, #0
-col_loop:
-    rrc  a
-    jc   col_found
-    inc  r2
-    sjmp col_loop
-col_found:
-    mov  a, r1
-    mov  b, #4
-    mul  ab
-    add  a, r2
-    movc a, @a+dptr
-    mov  TEMP_KEY, a
-next_row_end:
-    inc  r1
-    djnz r0, next_row
-    mov  P5, #0FFh
-    pop  dph
-    pop  dpl
-    pop  b
-    mov  a, TEMP_KEY
-    ret
-
-keymap:
-    db '1','2','3','A'
-    db '4','5','6','B'
-    db '7','8','9','C'
-    db '*','0','#','D'
-
-; ---------- Komunikaty tekstowe ----------
-msg_enter_hour:
-    db 'Set HH: ',0
-msg_enter_min:
-    db 'Set MM: ',0
-msg_press_hash:
-    db ' Press #',0
-msg_alarm_hour:
-    db 'Alarm HH: ',0
-msg_alarm_min:
-    db 'Alarm MM: ',0
-msg_press_star:
-    db ' Press *',0
-
-puts_lcd:
-    clr  a
-    movc a, @a+dptr
-    jz   puts_end
-    lcall putcharLCD
-    inc  dptr
-    sjmp puts_lcd
-puts_end:
-    ret
-
-; ---------- Procedura ustawiania czasu i alarmu ----------
-setup_full:
-    ; ---- czesc 1: ustawianie czasu (zatwierdzenie #) ----
-    mov  SETUP_STEP, #0
-    mov  SETUP_HOUR, #0
-    mov  SETUP_MIN, #0
-    lcall clear_display
-    mov  dptr, #msg_enter_hour
-    lcall puts_lcd
-setup_time_loop:
-    lcall scan_keyboard
-    mov  a, TEMP_KEY
-    cjne a, #0FFh, setup_time_key
-    sjmp setup_time_loop
-setup_time_key:
-    push acc
-wait_rel_t:
-    lcall scan_keyboard
-    mov  a, TEMP_KEY
-    cjne a, #0FFh, wait_rel_t
-    pop acc
-    ; sprawdz czy cyfra
-    cjne a, #'0', tch1
-    mov  DIGIT_TEMP, #0
-    ljmp proc_time_digit
-tch1:
-    cjne a, #'1', tch2
-    mov  DIGIT_TEMP, #1
-    ljmp proc_time_digit
-tch2:
-    cjne a, #'2', tch3
-    mov  DIGIT_TEMP, #2
-    ljmp proc_time_digit
-tch3:
-    cjne a, #'3', tch4
-    mov  DIGIT_TEMP, #3
-    ljmp proc_time_digit
-tch4:
-    cjne a, #'4', tch5
-    mov  DIGIT_TEMP, #4
-    ljmp proc_time_digit
-tch5:
-    cjne a, #'5', tch6
-    mov  DIGIT_TEMP, #5
-    ljmp proc_time_digit
-tch6:
-    cjne a, #'6', tch7
-    mov  DIGIT_TEMP, #6
-    ljmp proc_time_digit
-tch7:
-    cjne a, #'7', tch8
-    mov  DIGIT_TEMP, #7
-    ljmp proc_time_digit
-tch8:
-    cjne a, #'8', tch9
-    mov  DIGIT_TEMP, #8
-    ljmp proc_time_digit
-tch9:
-    cjne a, #'9', tch_hash
-    mov  DIGIT_TEMP, #9
-    ljmp proc_time_digit
-tch_hash:
-    cjne a, #'#', setup_time_loop
-    mov  a, SETUP_STEP
-    cjne a, #4, setup_time_loop
-    ; czas zatwierdzony
-    mov  R5, SETUP_HOUR
-    mov  R6, SETUP_MIN
-    mov  R7, #0
-    lcall clear_display
-    ; ---- czesc 2: ustawianie alarmu (zatwierdzenie *) ----
-    mov  SETUP_STEP, #4        ; kroki 4-7
-    mov  SETUP_HOUR, #0
-    mov  SETUP_MIN, #0
-    lcall clear_display
-    mov  dptr, #msg_alarm_hour
-    lcall puts_lcd
-setup_alarm_loop:
-    lcall scan_keyboard
-    mov  a, TEMP_KEY
-    cjne a, #0FFh, setup_alarm_key
-    sjmp setup_alarm_loop
-setup_alarm_key:
-    push acc
-wait_rel_a:
-    lcall scan_keyboard
-    mov  a, TEMP_KEY
-    cjne a, #0FFh, wait_rel_a
-    pop acc
-    cjne a, #'0', ach1
-    mov  DIGIT_TEMP, #0
-    ljmp proc_alarm_digit
-ach1:
-    cjne a, #'1', ach2
-    mov  DIGIT_TEMP, #1
-    ljmp proc_alarm_digit
-ach2:
-    cjne a, #'2', ach3
-    mov  DIGIT_TEMP, #2
-    ljmp proc_alarm_digit
-ach3:
-    cjne a, #'3', ach4
-    mov  DIGIT_TEMP, #3
-    ljmp proc_alarm_digit
-ach4:
-    cjne a, #'4', ach5
-    mov  DIGIT_TEMP, #4
-    ljmp proc_alarm_digit
-ach5:
-    cjne a, #'5', ach6
-    mov  DIGIT_TEMP, #5
-    ljmp proc_alarm_digit
-ach6:
-    cjne a, #'6', ach7
-    mov  DIGIT_TEMP, #6
-    ljmp proc_alarm_digit
-ach7:
-    cjne a, #'7', ach8
-    mov  DIGIT_TEMP, #7
-    ljmp proc_alarm_digit
-ach8:
-    cjne a, #'8', ach9
-    mov  DIGIT_TEMP, #8
-    ljmp proc_alarm_digit
-ach9:
-    cjne a, #'9', ach_star
-    mov  DIGIT_TEMP, #9
-    ljmp proc_alarm_digit
-ach_star:
-    cjne a, #'*', setup_alarm_loop
-    mov  a, SETUP_STEP
-    cjne a, #8, setup_alarm_loop
-    ; alarm zatwierdzony
-    mov  ALARM_HOUR, SETUP_HOUR
-    mov  ALARM_MIN, SETUP_MIN
-    lcall clear_display
-    ret
-
-; Obsluga cyfr dla czasu (kroki 0-3)
-proc_time_digit:
-    mov  a, SETUP_STEP
-    cjne a, #0, tstep1
-    mov  a, DIGIT_TEMP
-    mov  SETUP_HOUR, a
-    inc  SETUP_STEP
-    mov  a, SETUP_HOUR
-    add  a, #30h
-    lcall putcharLCD
-    ljmp setup_time_loop
-tstep1:
-    cjne a, #1, tstep2
-    mov  a, SETUP_HOUR
-    mov  b, #10
-    mul  ab
-    add  a, DIGIT_TEMP
-    mov  SETUP_HOUR, a
-    mov  a, SETUP_HOUR
-    cjne a, #24, thr_ok
-thr_ok:
-    jnc  thr_error
-    inc  SETUP_STEP
-    lcall clear_display
-    mov  dptr, #msg_enter_min
-    lcall puts_lcd
-    ljmp setup_time_loop
-thr_error:
-    mov  SETUP_STEP, #0
-    mov  SETUP_HOUR, #0
-    lcall clear_display
-    mov  dptr, #msg_enter_hour
-    lcall puts_lcd
-    ljmp setup_time_loop
-tstep2:
-    cjne a, #2, tstep3
-    mov  a, DIGIT_TEMP
-    mov  SETUP_MIN, a
-    inc  SETUP_STEP
-    mov  a, SETUP_MIN
-    add  a, #30h
-    lcall putcharLCD
-    ljmp setup_time_loop
-tstep3:
-    cjne a, #3, tstep_err
-    mov  a, SETUP_MIN
-    mov  b, #10
-    mul  ab
-    add  a, DIGIT_TEMP
-    mov  SETUP_MIN, a
-    mov  a, SETUP_MIN
-    cjne a, #60, tmin_ok
-tmin_ok:
-    jnc  tmin_error
-    inc  SETUP_STEP
-    lcall clear_display
-    mov  dptr, #msg_press_hash
-    lcall puts_lcd
-    ljmp setup_time_loop
-tmin_error:
-    mov  SETUP_STEP, #2
-    mov  SETUP_MIN, #0
-    lcall clear_display
-    mov  dptr, #msg_enter_min
-    lcall puts_lcd
-    ljmp setup_time_loop
-tstep_err:
-    ljmp setup_time_loop
-
-; Obsluga cyfr dla alarmu (kroki 4-7)
-proc_alarm_digit:
-    mov  a, SETUP_STEP
-    cjne a, #4, astep5
-    mov  a, DIGIT_TEMP
-    mov  SETUP_HOUR, a
-    inc  SETUP_STEP
-    mov  a, SETUP_HOUR
-    add  a, #30h
-    lcall putcharLCD
-    ljmp setup_alarm_loop
-astep5:
-    cjne a, #5, astep6
-    mov  a, SETUP_HOUR
-    mov  b, #10
-    mul  ab
-    add  a, DIGIT_TEMP
-    mov  SETUP_HOUR, a
-    mov  a, SETUP_HOUR
-    cjne a, #24, ahr_ok
-ahr_ok:
-    jnc  ahr_error
-    inc  SETUP_STEP
-    lcall clear_display
-    mov  dptr, #msg_alarm_min
-    lcall puts_lcd
-    ljmp setup_alarm_loop
-ahr_error:
-    mov  SETUP_STEP, #4
-    mov  SETUP_HOUR, #0
-    lcall clear_display
-    mov  dptr, #msg_alarm_hour
-    lcall puts_lcd
-    ljmp setup_alarm_loop
-astep6:
-    cjne a, #6, astep7
-    mov  a, DIGIT_TEMP
-    mov  SETUP_MIN, a
-    inc  SETUP_STEP
-    mov  a, SETUP_MIN
-    add  a, #30h
-    lcall putcharLCD
-    ljmp setup_alarm_loop
-astep7:
-    cjne a, #7, astep_err
-    mov  a, SETUP_MIN
-    mov  b, #10
-    mul  ab
-    add  a, DIGIT_TEMP
-    mov  SETUP_MIN, a
-    mov  a, SETUP_MIN
-    cjne a, #60, amin_ok
-amin_ok:
-    jnc  amin_error
-    inc  SETUP_STEP
-    lcall clear_display
-    mov  dptr, #msg_press_star
-    lcall puts_lcd
-    ljmp setup_alarm_loop
-amin_error:
-    mov  SETUP_STEP, #6
-    mov  SETUP_MIN, #0
-    lcall clear_display
-    mov  dptr, #msg_alarm_min
-    lcall puts_lcd
-    ljmp setup_alarm_loop
-astep_err:
-    ljmp setup_alarm_loop
-
-; ---------- Program gl體ny ----------
+; ---------- Program gl贸wny ----------
 start:
     init_LCD
+    MOV R7, #0             
+
+    ; Uruchamiamy interaktywny kreator
+    LCALL setup_full
+
+    ; Startujemy zegar
     mov  TMOD, #01H
     mov  TH0, #3CH
     mov  TL0, #0B0H
-    setb TR0
-    mov  IE, #82H
-    mov  CLOCK_RUNNING, #0
+    setb TCON.4            ; TR0
+    mov  0A8H, #82H        ; IE (przerwania)
+
+    setb F_RUNNING
     mov  PREV_P3, #0
     mov  ALARM_TRIG, #0
-    lcall buzzer_off
-    ; pelna konfiguracja (czas + alarm)
-    lcall setup_full
-    mov  CLOCK_RUNNING, #1
+    mov  ALARM_DONE, #0
+    LCALL buzzer_off
+    lcall display_clock
+    
     mov  R0, #20
     mov  A, #0FH
     mov  P1, A
@@ -623,14 +583,34 @@ main_loop:
     mov  A, R0
     jnz  main_loop
     mov  R0, #20
-    mov  A, CLOCK_RUNNING
-    jz   skip_tick
+
+    jnb  F_RUNNING, skip_tick
     lcall inc_clock
     lcall display_clock
+
 skip_tick:
     mov  A, P1
     cpl  A
     mov  P1, A
     ljmp main_loop
+
+; --- TABELE DANYCH (W PAMI臉CI ROM / CODE) ---
+
+SCAN_CODES:
+    DB 0EBH, 077H, 07BH, 07DH, 0B7H, 0BBH, 0BDH, 0D7H, 0DBH, 0DDH
+    DB 07EH, 0BEH, 0DEH, 0EEH, 0E7H, 0EDH, 00H
+
+NUM_VALUES:
+    ; Indeks: 0,1,2,3,4,5,6,7,8,9, A, B, C, D, *, #
+    ; Znak '*' to teraz 0FEH, znak '#' to 0FFH
+    DB 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0EEH, 0EEH, 0EEH, 0EEH, 0FEH, 0FFH
+
+TXT_HOUR:    DB "Ustaw Godz: ", 0
+TXT_MIN:     DB "Ustaw Min: ", 0
+TXT_CONF:    DB "Zatwierdz [#]", 0
+TXT_ALARM_H: DB "Alarm Godz: ", 0
+TXT_ALARM_M: DB "Alarm Min: ", 0
+TXT_ACONF:   DB "Zatwierdz [*]", 0
+TXT_ERR:     DB "Blad! Zly zakres", 0
 
 END start
