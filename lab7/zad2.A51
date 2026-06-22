@@ -22,15 +22,14 @@ RTCdw equ 0FF0CH    ; dzien tygodnia (1=Pon ... 7=Nd)
 RTCpf equ 0FF0FH    ; konfiguracja RTC (bit2 = tryb 24h)
 
 ; === Kody komend LCD ===
-HOME     equ 80H    ; kursor na poczatek linii 1
-INITDISP equ 38H    ; init: tryb 8-bit, 2 linie
-HOM2     equ 0C0H   ; kursor na poczatek linii 2
-LCDON    equ 0EH    ; wlacz LCD, kursor widoczny
-CLEAR    equ 01H    ; wyczysc wyswietlacz
-
+#define  HOME     0x80     // put cursor to second line  
+#define  INITDISP 0x38     // LCD init (8-bit mode)  
+#define  HOM2     0xc0     // put cursor to second line  
+#define  LCDON    0x0e     // LCD nn, cursor off, blinking off
+#define  CLEAR    0x01     // LCD display clear
 org 0100H
     Czas:    db "42:00:69"     ; lancuch inicjalizujacy czas "HH:MM:SS"
-    Dzien:   db "32:13:2022*1" ; lancuch inicjalizujacy date "DD:MM:YYYY*D"
+    Dzien:   db "31:04:2022*1" ; lancuch inicjalizujacy date "DD:MM:YYYY*D"
     TwentyH: db "2"            ; stala cyfra tysiecy roku
     TwentyL: db "0"            ; stala cyfra setek roku
     MonthNames: db "StyLutMarKwiMajCzeLipSieWrzPazLisGru" ; skroty miesiecy (3 znaki kazdy)
@@ -61,9 +60,9 @@ tutu: MOV  DPTR, #LCDstatus
 
 ; === MACRO: init_LCD - pelna sekwencja inicjalizacji wyswietlacza ===
 init_LCD MACRO
-         LCDcntrlWR INITDISP
-         LCDcntrlWR CLEAR
-         LCDcntrlWR LCDON
+         LCDcntrlWR #INITDISP
+         LCDcntrlWR #CLEAR
+         LCDcntrlWR #LCDON
          ENDM
 
 ; === MACRO: disp_nibble - odczytaj polowke BCD z RTC (DPTR), wyswietl jako cyfre ASCII ===
@@ -81,24 +80,24 @@ putcharLCD:
 
 ; === FUNKCJA: disp_time - wyswietl czas na linii 1 w formacie HH:MM:SS ===
 disp_time:
-    LCDcntrlWR HOME
-    mov DPTR, #RTChx
-    disp_nibble
-    mov DPTR, #RTCxh
-    disp_nibble
-    mov A, #':'
-    call putcharLCD
-    mov DPTR, #RTCmx
-    disp_nibble
-    mov DPTR, #RTCxm
-    disp_nibble
-    mov A, #':'
-    call putcharLCD
-    mov DPTR, #RTCsx
-    disp_nibble
-    mov DPTR, #RTCxs
-    disp_nibble
-    RET
+	LCDcntrlWR #HOME
+	mov DPTR,#RTChx	; get hours from RTC (higher nibble)
+	disp_nibble
+	mov DPTR,#RTCxh	; get hours from RTC (lower nibble)
+	disp_nibble
+	mov A,#':'
+	call putcharLCD
+	mov DPTR,#RTCmx	; get minutes from RTC (higher nibble)
+	disp_nibble
+	mov DPTR,#RTCxm	; get minutes from RTC (lower nibble)
+	disp_nibble
+	mov A,#':'
+	call putcharLCD;
+	mov DPTR,#RTCsx	; get seconds from RTC (higher nibble)
+	disp_nibble
+	mov DPTR,#RTCxs	; get seconds from RTC (lower nibble)
+	disp_nibble
+	RET
 
 ; === FUNKCJA: disp_month_abbr - wyswietl 3-literowy skrot miesiaca, numer miesiaca w R6 ===
 disp_month_abbr:
@@ -164,7 +163,7 @@ disp_dow_abbr:
 
 ; === FUNKCJA: disp_date - wyswietl date na linii 2 w formacie DD-MMM-20YY DOW ===
 disp_date:
-    LCDcntrlWR HOM2
+    LCDcntrlWR #HOM2
     mov DPTR, #RTCdx
     disp_nibble
     mov DPTR, #RTCxd
